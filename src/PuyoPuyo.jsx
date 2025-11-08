@@ -1,422 +1,279 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useState, useRef } from "react";
 
-// --- Config ---
+// PuyoPuyoGame.jsx
+// Single-file React component. Tailwind CSS assumed available in the project.
+// Controls: Left / Right arrows to move, Down to speed drop, Up to rotate (swap pair), Space to hard-drop.
+
 const COLS = 6;
 const ROWS = 12;
-const CELL = 32; // px
-const CANVAS_W = COLS * CELL;
-const CANVAS_H = ROWS * CELL;
-const COLORS = [
-  "#e74c3c", // red
-  "#27ae60", // green
-  "#2980b9", // blue
-  "#f1c40f", // yellow
-  "#9b59b6", // purple
-];
-
-// Game speeds (ms per tick)
-const BASE_TICK = 700;
-const SOFT_DROP_TICK = 60;
-
-// --- Types ---
-/** grid[r][c] = null | colorIndex (0..COLORS.length-1) */
-
-function emptyGrid() {
-  return Array.from({ length: ROWS }, () => Array(COLS).fill(null));
-}
+const EMPTY = null;
+const PUYO_COLORS = ["#ff4d4f", "#40a9ff", "#ffd666", "#73d13d", "#9254de"]; // red, blue, yellow, green, purple
 
 function randColor() {
-  return Math.floor(Math.random() * COLORS.length);
+  return PUYO_COLORS[Math.floor(Math.random() * PUYO_COLORS.length)];
 }
 
-// child relative offsets per orientation (0: up, 1: right, 2: down, 3: left)
-const CHILD_OFFSETS = [
-  { x: 0, y: -1 },
-  { x: 1, y: 0 },
-  { x: 0, y: 1 },
-  { x: -1, y: 0 },
-];
-
-function inBounds(x, y) {
-  return x >= 0 && x < COLS && y >= 0 && y < ROWS;
+function createEmptyGrid() {
+  return Array.from({ length: ROWS }, () => Array.from({ length: COLS }, () => EMPTY));
 }
 
-function canPlace(grid, cells) {
-  for (const { x, y } of cells) {
-    if (!inBounds(x, y)) return false;
-    if (grid[y][x] !== null) return false;
-  }
-  return true;
-}
-
-function getPieceCells(piece) {
-  const { x, y, orientation, colors } = piece;
-  const child = CHILD_OFFSETS[orientation];
-  return [
-    { x, y, color: colors[0] },
-    { x: x + child.x, y: y + child.y, color: colors[1] },
-  ];
-}
-
-function cloneGrid(grid) {
-  return grid.map((row) => row.slice());
-}
-
-function paintPieceOnto(grid, piece) {
-  const g = cloneGrid(grid);
-  for (const cell of getPieceCells(piece)) {
-    if (inBounds(cell.x, cell.y)) g[cell.y][cell.x] = cell.color;
-  }
-  return g;
-}
-
-function spawnPiece() {
-  return {
-    x: Math.floor(COLS / 2),
-    y: 0,
-    orientation: 2, // child below by default
-    colors: [randColor(), randColor()],
-  };
-}
-
-function findClusters(grid) {
-  const visited = Array.from({ length: ROWS }, () => Array(COLS).fill(false));
-  const clusters = [];
-
-  const dirs = [
-    [1, 0],
-    [-1, 0],
-    [0, 1],
-    [0, -1],
-  ];
-
-  for (let y = 0; y < ROWS; y++) {
-    for (let x = 0; x < COLS; x++) {
-      const color = grid[y][x];
-      if (color === null || visited[y][x]) continue;
-      const stack = [[x, y]];
-      const cells = [];
-      visited[y][x] = true;
-      while (stack.length) {
-        const [cx, cy] = stack.pop();
-        cells.push([cx, cy]);
-        for (const [dx, dy] of dirs) {
-          const nx = cx + dx,
-            ny = cy + dy;
-          if (inBounds(nx, ny) && !visited[ny][nx] && grid[ny][nx] === color) {
-            visited[ny][nx] = true;
-            stack.push([nx, ny]);
-          }
-        }
-      }
-      if (cells.length >= 4) clusters.push({ color, cells });
-    }
-  }
-
-  return clusters;
-}
-
-function clearClusters(grid, clusters) {
-  const g = cloneGrid(grid);
-  for (const cl of clusters) {
-    for (const [x, y] of cl.cells) g[y][x] = null;
-  }
-  return g;
-}
-
-function applyGravity(grid) {
-  const g = cloneGrid(grid);
-  for (let x = 0; x < COLS; x++) {
-    let write = ROWS - 1;
-    for (let y = ROWS - 1; y >= 0; y--) {
-      if (g[y][x] !== null) {
-        const val = g[y][x];
-        g[y][x] = null;
-        g[write][x] = val;
-        write--;
-      }
-    }
-  }
-  return g;
-}
-
-function drawGrid(ctx, grid) {
-  ctx.clearRect(0, 0, CANVAS_W, CANVAS_H);
-  // background
-  ctx.fillStyle = "#0b132b";
-  ctx.fillRect(0, 0, CANVAS_W, CANVAS_H);
-
-  // cells
-  for (let y = 0; y < ROWS; y++) {
-    for (let x = 0; x < COLS; x++) {
-      const v = grid[y][x];
-      if (v !== null) {
-        const px = x * CELL;
-        const py = y * CELL;
-        const color = COLORS[v];
-        // bubble style
-        const r = CELL * 0.42;
-        const cx = px + CELL / 2;
-        const cy = py + CELL / 2;
-        const grad = ctx.createRadialGradient(
-          cx - r * 0.4,
-          cy - r * 0.4,
-          r * 0.2,
-          cx,
-          cy,
-          r,
-        );
-        grad.addColorStop(0, "#ffffff");
-        grad.addColorStop(0.15, color);
-        grad.addColorStop(1, "#111111");
-        ctx.fillStyle = grad;
-        ctx.beginPath();
-        ctx.arc(cx, cy, r, 0, Math.PI * 2);
-        ctx.fill();
-      }
-      // grid line
-      ctx.strokeStyle = "rgba(255,255,255,0.06)";
-      ctx.strokeRect(x * CELL, y * CELL, CELL, CELL);
-    }
-  }
-}
-
-function drawPiece(ctx, piece) {
-  const cells = getPieceCells(piece);
-  for (const { x, y, color } of cells) {
-    if (!inBounds(x, y)) continue;
-    const px = x * CELL;
-    const py = y * CELL;
-    const r = CELL * 0.42;
-    const cx = px + CELL / 2;
-    const cy = py + CELL / 2;
-    const base = COLORS[color];
-    const grad = ctx.createRadialGradient(
-      cx - r * 0.4,
-      cy - r * 0.4,
-      r * 0.2,
-      cx,
-      cy,
-      r,
-    );
-    grad.addColorStop(0, "#ffffff");
-    grad.addColorStop(0.15, base);
-    grad.addColorStop(1, "#111111");
-    ctx.fillStyle = grad;
-    ctx.beginPath();
-    ctx.arc(cx, cy, r, 0, Math.PI * 2);
-    ctx.fill();
-  }
-}
-
-function within(grid, x, y) {
-  return inBounds(x, y) && grid[y][x] === null;
-}
-
-function tryMove(grid, piece, dx, dy) {
-  const np = { ...piece, x: piece.x + dx, y: piece.y + dy };
-  const cells = getPieceCells(np).map(({ x, y }) => ({ x, y }));
-  if (canPlace(grid, cells)) return np;
-  return piece;
-}
-
-function tryRotate(grid, piece, dir = 1) {
-  let next = { ...piece, orientation: (piece.orientation + dir + 4) % 4 };
-  let cells = getPieceCells(next).map(({ x, y }) => ({ x, y }));
-  if (canPlace(grid, cells)) return next;
-  // simple wall kicks: try move left/right
-  for (const dx of [-1, 1, -2, 2]) {
-    const kicked = { ...next, x: next.x + dx };
-    cells = getPieceCells(kicked).map(({ x, y }) => ({ x, y }));
-    if (canPlace(grid, cells)) return kicked;
-  }
-  return piece;
-}
-
-export default function App() {
-  const canvasRef = useRef(null);
-
-  const [grid, setGrid] = useState(emptyGrid);
-  const [piece, setPiece] = useState(spawnPiece);
-  const [running, setRunning] = useState(true);
-  const [score, setScore] = useState(0);
-  const [chains, setChains] = useState(0);
-  const [softDrop, setSoftDrop] = useState(false);
-  const [gameOver, setGameOver] = useState(false);
-
-  // draw
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    const ctx = canvas.getContext("2d");
-    drawGrid(ctx, grid);
-    if (!gameOver) drawPiece(ctx, piece);
-  }, [grid, piece, gameOver]);
-
-  // keyboard
-  useEffect(() => {
-    function onKey(e) {
-      if (!running || gameOver) return;
-      if (e.key === "ArrowLeft") {
-        setPiece((p) => tryMove(grid, p, -1, 0));
-      } else if (e.key === "ArrowRight") {
-        setPiece((p) => tryMove(grid, p, 1, 0));
-      } else if (e.key === "ArrowDown") {
-        setSoftDrop(true);
-      } else if (e.key === "ArrowUp" || e.key === "x") {
-        setPiece((p) => tryRotate(grid, p, 1));
-      } else if (e.key === "z") {
-        setPiece((p) => tryRotate(grid, p, -1));
-      } else if (e.key === " ") {
-        // hard drop
-        setPiece((p) => {
-          let cur = p;
-          while (true) {
-            const moved = tryMove(grid, cur, 0, 1);
-            if (moved === cur) break;
-            cur = moved;
-          }
-          return cur;
-        });
-        // lock immediately next tick
-      } else if (e.key === "p") {
-        setRunning((r) => !r);
-      } else if (e.key === "r") {
-        reset();
-      }
-    }
-    function onKeyUp(e) {
-      if (e.key === "ArrowDown") setSoftDrop(false);
-    }
-    window.addEventListener("keydown", onKey);
-    window.addEventListener("keyup", onKeyUp);
-    return () => {
-      window.removeEventListener("keydown", onKey);
-      window.removeEventListener("keyup", onKeyUp);
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [grid, running, gameOver]);
-
-  // game loop
-  useEffect(() => {
-    if (!running || gameOver) return;
-    let cancelled = false;
-    const tickMs = softDrop ? SOFT_DROP_TICK : BASE_TICK;
-
-    const tick = () => {
-      if (cancelled) return;
-      setPiece((p) => {
-        const moved = tryMove(grid, p, 0, 1);
-        if (moved === p) {
-          // lock
-          let g = paintPieceOnto(grid, p);
-          // check clusters with cascading
-          let totalCleared = 0;
-          let chain = 0;
-          while (true) {
-            const clusters = findClusters(g);
-            if (clusters.length === 0) break;
-            chain += 1;
-            const cleared = clusters.reduce(
-              (acc, c) => acc + c.cells.length,
-              0,
-            );
-            totalCleared += cleared;
-            g = clearClusters(g, clusters);
-            g = applyGravity(g);
-          }
-          if (chain > 0) {
-            setChains(chain);
-            setScore((s) => s + totalCleared * 10 * chain);
-          } else {
-            setChains(0);
-          }
-          // spawn next
-          const next = spawnPiece();
-          const cells = getPieceCells(next).map(({ x, y }) => ({ x, y }));
-          if (!canPlace(g, cells)) {
-            setGrid(g);
-            setGameOver(true);
-            setRunning(false);
-            return p; // keep piece for draw suppression
-          }
-          setGrid(g);
-          return next;
-        }
-        return moved;
-      });
-    };
-
-    const id = setInterval(tick, tickMs);
-    return () => {
-      cancelled = true;
-      clearInterval(id);
-    };
-  }, [grid, running, softDrop, gameOver]);
-
-  function reset() {
-    setGrid(emptyGrid());
-    setPiece(spawnPiece());
-    setScore(0);
-    setChains(0);
-    setGameOver(false);
-    setRunning(true);
-  }
-
+function EyePuyo({ color, size = 36 }) {
+  // A simple circular puyo with an eyeball using SVG
   return (
-    <div className="min-h-screen w-full bg-slate-900 text-slate-100 flex items-center justify-center p-6">
-      <div className="grid grid-cols-[auto_1fr] gap-6 items-start">
-        <div className="bg-slate-800 rounded-2xl p-4 shadow-xl">
-          <canvas
-            ref={canvasRef}
-            width={CANVAS_W}
-            height={CANVAS_H}
-            className="rounded-xl border border-slate-700"
-          />
-        </div>
-        <div className="space-y-4 max-w-sm">
-          <h1 className="text-2xl font-bold">ぷよぷよ（簡易版）</h1>
-          <div className="grid grid-cols-2 gap-3">
-            <InfoCard label="SCORE" value={score.toLocaleString()} />
-            <InfoCard label="CHAINS" value={chains} />
-            <InfoCard
-              label="STATE"
-              value={running ? (gameOver ? "GAME OVER" : "PLAY") : "PAUSE"}
-            />
-          </div>
-          <div className="bg-slate-800 rounded-xl p-4 leading-relaxed text-sm border border-slate-700">
-            <p className="font-semibold mb-1">操作方法</p>
-            <ul className="list-disc pl-5 space-y-1">
-              <li>← → : 移動</li>
-              <li>↑ / X : 右回転</li>
-              <li>Z : 左回転</li>
-              <li>↓ : ソフトドロップ</li>
-              <li>Space : ハードドロップ</li>
-              <li>P : 一時停止 / 再開</li>
-              <li>R : リセット</li>
-            </ul>
-          </div>
-          <div className="text-xs text-slate-400">
-            4個以上つながると消滅。連鎖が発生するとボーナス加点されます。
-          </div>
-          {gameOver && (
-            <button
-              onClick={reset}
-              className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 transition shadow"
-            >
-              もう一度！
-            </button>
-          )}
-        </div>
-      </div>
-    </div>
+    <svg width={size} height={size} viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <filter id="shadow" x="-50%" y="-50%" width="200%" height="200%">
+          <feDropShadow dx="0" dy="4" stdDeviation="6" floodOpacity="0.25" />
+        </filter>
+      </defs>
+      <g filter="url(#shadow)">
+        <circle cx="50" cy="50" r="40" fill={color} />
+        <circle cx="50" cy="42" r="18" fill="#fff" />
+        <circle cx="50" cy="42" r="8" fill="#111" />
+        {/* a little glint */}
+        <circle cx="44" cy="36" r="3" fill="#fff" />
+      </g>
+    </svg>
   );
 }
 
-function InfoCard({ label, value }) {
+export default function PuyoPuyoGame() {
+  const [grid, setGrid] = useState(createEmptyGrid);
+  const [current, setCurrent] = useState(null); // { blocks: [{r,c,color}, ...], dir: 0 }
+  const [tickInterval, setTickInterval] = useState(600);
+  const [running, setRunning] = useState(true);
+  const droppedRef = useRef(false);
+
+  // spawn a new pair: primary at top middle, secondary above it or to the right depending on orientation
+  function spawnNew() {
+    const mid = Math.floor(COLS / 2) - 1;
+    const colorA = randColor();
+    const colorB = randColor();
+    // position primary at row 0, col mid
+    const newPair = {
+      blocks: [
+        { r: 0, c: mid, color: colorA }, // primary
+        { r: -1, c: mid, color: colorB }, // secondary above
+      ],
+      dir: 0, // 0: up, 1: right, 2: down, 3: left (dir is orientation of the secondary relative to primary)
+    };
+    setCurrent(newPair);
+  }
+
+  // check collision if we place blocks at given positions
+  function collides(blocks) {
+    return blocks.some(({ r, c }) => {
+      if (c < 0 || c >= COLS) return true;
+      if (r >= ROWS) return true;
+      if (r >= 0 && grid[r][c] !== EMPTY) return true;
+      return false;
+    });
+  }
+
+  // freeze current into grid
+  function freezeCurrent(cur) {
+    setGrid((g) => {
+      const ng = g.map((row) => row.slice());
+      cur.blocks.forEach(({ r, c, color }) => {
+        if (r >= 0 && r < ROWS && c >= 0 && c < COLS) ng[r][c] = color;
+      });
+      return ng;
+    });
+    setCurrent(null);
+  }
+
+  // apply gravity to entire grid (single step): any puyo with empty cell below falls down
+  function applyGravityGrid() {
+    setGrid((g) => {
+      const ng = g.map((row) => row.slice());
+      // start from bottom-2 upwards
+      for (let r = ROWS - 2; r >= 0; r--) {
+        for (let c = 0; c < COLS; c++) {
+          if (ng[r][c] !== EMPTY && ng[r + 1][c] === EMPTY) {
+            ng[r + 1][c] = ng[r][c];
+            ng[r][c] = EMPTY;
+          }
+        }
+      }
+      return ng;
+    });
+  }
+
+  // game tick: move current down if possible, else freeze
+  function tick() {
+    if (!running) return;
+    setCurrent((cur) => {
+      if (!cur) {
+        spawnNew();
+        return cur;
+      }
+      const moved = cur.blocks.map((b) => ({ ...b, r: b.r + 1 }));
+      if (!collides(moved)) {
+        return { ...cur, blocks: moved };
+      } else {
+        // cannot move down -> freeze
+        freezeCurrent(cur);
+        // after freezing, let gravity act on grid a bit (so single-step falls happen)
+        // we'll set a short delay to apply gravity immediately
+        setTimeout(() => applyGravityGrid(), 50);
+        return null;
+      }
+    });
+  }
+
+  // input handlers
+  useEffect(() => {
+    function onKey(e) {
+      if (!current) return;
+      if (["ArrowLeft", "ArrowRight", "ArrowDown", "ArrowUp", " "].includes(e.key)) {
+        e.preventDefault();
+      }
+      if (e.key === "ArrowLeft") {
+        // try move left
+        const moved = current.blocks.map((b) => ({ ...b, c: b.c - 1 }));
+        if (!collides(moved)) setCurrent({ ...current, blocks: moved });
+      } else if (e.key === "ArrowRight") {
+        const moved = current.blocks.map((b) => ({ ...b, c: b.c + 1 }));
+        if (!collides(moved)) setCurrent({ ...current, blocks: moved });
+      } else if (e.key === "ArrowDown") {
+        // soft drop
+        const moved = current.blocks.map((b) => ({ ...b, r: b.r + 1 }));
+        if (!collides(moved)) setCurrent({ ...current, blocks: moved });
+      } else if (e.key === "ArrowUp") {
+        // rotate clockwise: adjust secondary around primary
+        // primary is blocks[0]
+        const A = current.blocks[0];
+        const B = current.blocks[1];
+        const relR = B.r - A.r;
+        const relC = B.c - A.c;
+        // rotate (r,c) -> (c, -r)
+        const newRelR = relC;
+        const newRelC = -relR;
+        const newB = { ...B, r: A.r + newRelR, c: A.c + newRelC };
+        const rotated = [A, newB];
+        if (!collides(rotated)) setCurrent({ ...current, blocks: rotated });
+      } else if (e.key === " ") {
+        // hard drop
+        let temp = current.blocks.map((b) => ({ ...b }));
+        while (true) {
+          const moved = temp.map((b) => ({ ...b, r: b.r + 1 }));
+          if (collides(moved)) break;
+          temp = moved;
+        }
+        setCurrent((cur) => {
+          if (!cur) return cur;
+          freezeCurrent({ ...cur, blocks: temp });
+          setTimeout(() => applyGravityGrid(), 30);
+          return null;
+        });
+      }
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [current, grid]);
+
+  // main interval
+  useEffect(() => {
+    const id = setInterval(tick, tickInterval);
+    return () => clearInterval(id);
+  }, [tickInterval, running, grid]);
+
+  // initial spawn
+  useEffect(() => {
+    spawnNew();
+  }, []);
+
+  // click board to drop single puyo at that column (for quick testing)
+  function handleClickColumn(c) {
+    setGrid((g) => {
+      const ng = g.map((r) => r.slice());
+      // find first empty from top
+      for (let r = 0; r < ROWS; r++) {
+        if (ng[r][c] === EMPTY) {
+          ng[r][c] = randColor();
+          break;
+        }
+      }
+      return ng;
+    });
+  }
+
   return (
-    <div className="rounded-xl bg-slate-800 border border-slate-700 p-3">
-      <div className="text-[10px] tracking-widest text-slate-400">{label}</div>
-      <div className="text-xl font-bold">{value}</div>
+    <div className="p-4 flex flex-col items-center gap-4">
+      <h1 className="text-2xl font-bold">ぷよぷよ（目玉ぷよ）</h1>
+      <div className="flex gap-4">
+        {/* board */}
+        <div
+          className="bg-slate-800 p-2 rounded-lg"
+          style={{ width: COLS * 48 + 8, height: ROWS * 48 + 8 }}
+        >
+          <div className="grid" style={{ gridTemplateColumns: `repeat(${COLS}, 48px)` }}>
+            {Array.from({ length: ROWS }).map((_, r) =>
+              Array.from({ length: COLS }).map((_, c) => {
+                // determine what to render here: current block or grid
+                let color = grid[r][c];
+                if (current) {
+                  const found = current.blocks.find((b) => b.r === r && b.c === c);
+                  if (found) color = found.color;
+                }
+                return (
+                  <div
+                    key={`${r}-${c}`}
+                    onClick={() => handleClickColumn(c)}
+                    className="w-12 h-12 m-1 bg-slate-700 rounded flex items-center justify-center"
+                  >
+                    {color ? <EyePuyo color={color} size={40} /> : <div className="w-8 h-8" />}
+                  </div>
+                );
+              })
+            )}
+          </div>
+        </div>
+
+        {/* side panel */}
+        <div className="w-48 p-3 bg-white/10 rounded">
+          <div className="mb-2">Controls:</div>
+          <ul className="text-sm list-disc pl-5">
+            <li>← → : 左右に移動</li>
+            <li>↓ : 早く落とす（ソフトドロップ）</li>
+            <li>↑ : 回転</li>
+            <li>Space : ハードドロップ</li>
+            <li>Click column : その列に1つ落とす（テスト用）</li>
+          </ul>
+
+          <div className="mt-3">Speed:</div>
+          <input
+            type="range"
+            min={100}
+            max={1000}
+            value={tickInterval}
+            onChange={(e) => setTickInterval(Number(e.target.value))}
+            className="w-full"
+          />
+          <div className="mt-3">状態</div>
+          <div className="text-sm mt-1">Current: {current ? "落下中" : "なし（次で生成）"}</div>
+          <div className="mt-3 flex gap-2">
+            <button
+              className="px-3 py-1 rounded bg-white/10"
+              onClick={() => setRunning((r) => !r)}
+            >
+              {running ? "Pause" : "Resume"}
+            </button>
+            <button
+              className="px-3 py-1 rounded bg-white/10"
+              onClick={() => {
+                setGrid(createEmptyGrid());
+                setCurrent(null);
+                spawnNew();
+              }}
+            >
+              Reset
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div className="text-xs text-slate-400">※このデモは「ぷよが下に空白があれば下に落ちる」挙動と、目玉のあるぷよの見た目を実装しています。連鎖・消去は未実装です。</div>
     </div>
   );
 }
